@@ -198,7 +198,7 @@ fun SmbTestScreen(modifier: Modifier = Modifier) {
                                 serverId = server.id,
                                 remotePath = remoteFolder
                             )
-                            syncController.pushToSmb(task, server, shareName, localTestDir).collect { progress ->
+                            syncController.pushToSmb(context, task, server, shareName, localTestDir).collect { progress ->
                                 logText = if (progress.error != null) {
                                     "❌ 推送出错: ${progress.error}"
                                 } else {
@@ -234,7 +234,7 @@ fun SmbTestScreen(modifier: Modifier = Modifier) {
                                 serverId = server.id,
                                 remotePath = remoteFolder
                             )
-                            syncController.pullFromSmb(task, server, shareName, localTestDir).collect { progress ->
+                            syncController.pullFromSmb(context, task, server, shareName, localTestDir).collect { progress ->
                                 logText = if (progress.error != null) {
                                     "❌ 拉取出错: ${progress.error}"
                                 } else {

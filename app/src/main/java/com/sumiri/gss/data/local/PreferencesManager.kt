@@ -2,12 +2,15 @@ package com.sumiri.gss.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.sumiri.gss.data.model.ProtocolType
 import com.sumiri.gss.data.model.RemoteServer
 import com.sumiri.gss.data.model.SyncTask
 
 class PreferencesManager(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("gss_prefs", Context.MODE_PRIVATE)
+    private val gson = Gson()
 
     fun saveServer(server: RemoteServer, shareName: String) {
         prefs.edit()
@@ -35,29 +38,54 @@ class PreferencesManager(context: Context) {
         return Pair(server, share)
     }
 
-    fun saveTask(task: SyncTask) {
-        prefs.edit()
-            .putString("task_id", task.id)
-            .putString("task_local_uri", task.localUri)
-            .putString("task_remote_path", task.remotePath)
-            .apply()
+    fun saveTaskList(taskList: List<SyncTask>) {
+        val json = gson.toJson(taskList)
+        prefs.edit().putString("task_list_json", json).apply()
     }
 
-    fun loadTask(defaultLocalPath: String): SyncTask {
-        val id = prefs.getString("task_id", "default-game-slot") ?: "default-game-slot"
-        val localUri = prefs.getString("task_local_uri", defaultLocalPath) ?: defaultLocalPath
-        val remotePath = prefs.getString("task_remote_path", "GameSS") ?: "GameSS"
+    fun loadTaskList(defaultLocalPath: String): List<SyncTask> {
+        val json = prefs.getString("task_list_json", null)
+        if (json.isNull_or_blank()) {
+            val defaultTask = SyncTask(
+                id = "default-game-slot",
+                displayName = "默认游戏存档",
+                localUri = defaultLocalPath,
+                serverId = "default_server",
+                remotePath = "GameSS"
+            )
+            return listOf(defaultTask)
+        }
+        val type = object : TypeToken<List<SyncTask>>() {}.type
+        return gson.fromJson(json, type) ?: emptyList()
+    }
 
-        return SyncTask(
-            id = id,
-            displayName = id,
-            localUri = localUri,
-            serverId = "default_server",
-            remotePath = remotePath
-        )
+    fun saveActiveTaskId(taskId: String) {
+        prefs.edit().putString("active_task_id", taskId).apply()
+    }
+
+    fun getActiveTaskId(): String {
+        return prefs.getString("active_task_id", "default-game-slot") ?: "default-game-slot"
+    }
+
+    fun setShowHiddenFiles(show: Boolean) {
+        prefs.edit().putBoolean("show_hidden_files", show).apply()
+    }
+
+    fun getShowHiddenFiles(): Boolean {
+        return prefs.getBoolean("show_hidden_files", false)
+    }
+
+    fun setThemeMode(mode: String) {
+        prefs.edit().putString("theme_mode", mode).apply()
+    }
+
+    fun getThemeMode(): String {
+        return prefs.getString("theme_mode", "SYSTEM") ?: "SYSTEM"
     }
 
     fun clearAll() {
         prefs.edit().clear().apply()
     }
+
+    private fun String?.isNull_or_blank(): Boolean = this == null || this.trim().isEmpty()
 }

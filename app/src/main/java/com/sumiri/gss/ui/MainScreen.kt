@@ -1,8 +1,10 @@
 package com.sumiri.gss.ui
 
 import android.os.Environment
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
@@ -13,106 +15,186 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import com.sumiri.gss.data.local.PreferencesManager
 import com.sumiri.gss.data.model.SyncTask
+import com.sumiri.gss.ui.theme.GameSSTheme
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(modifier: Modifier = Modifier) {
+fun MainScreen(
+    onThemeModeChanged: (String) -> Unit = {},
+    modifier: Modifier = Modifier
+) {
     val context = LocalContext.current
     val prefsManager = remember { PreferencesManager(context) }
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: 主页, 1: 文件管理, 2: 设置
 
-    // 加载持久化本地配置
+    // 主题控制
+    var themeMode by remember { mutableStateOf(prefsManager.getThemeMode()) }
+    val isDarkTheme = when (themeMode) {
+        "LIGHT" -> false
+        "DARK" -> true
+        else -> isSystemInDarkTheme()
+    }
+
+    // 加载持久化服务器与共享名配置
     val (loadedServer, loadedShare) = remember { prefsManager.loadServer() }
     var currentServer by remember { mutableStateOf(loadedServer) }
     var shareName by remember { mutableStateOf(loadedShare) }
 
+    // 加载隐藏文件显示设置
+    var showHiddenFiles by remember { mutableStateOf(prefsManager.getShowHiddenFiles()) }
+
+    // 加载 Task ID 任务映射列表与当前激活 ID
     val defaultLocalPath = remember { Environment.getExternalStorageDirectory().absolutePath }
-    var currentTask by remember { mutableStateOf(prefsManager.loadTask(defaultLocalPath)) }
+    var taskList by remember { mutableStateOf(prefsManager.loadTaskList(defaultLocalPath)) }
+    var activeTaskId by remember { mutableStateOf(prefsManager.getActiveTaskId()) }
 
     var showResetDialog by remember { mutableStateOf(false) }
+    var showCreateTaskDialogInTab1 by remember { mutableStateOf(false) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = when (selectedTab) {
-                            0 -> "GameSaveSync - 主页"
-                            1 -> "文件管理 & Task 映射"
-                            else -> "系统设置"
-                        }
-                    )
-                },
-                actions = {
-                    if (selectedTab == 2) {
-                        TextButton(onClick = { showResetDialog = true }) {
-                            Icon(
-                                imageVector = Icons.Default.Refresh,
-                                contentDescription = "重置",
-                                tint = MaterialTheme.colorScheme.error
-                            )
-                            Text("重置", color = MaterialTheme.colorScheme.error)
+    GameSSTheme(darkTheme = isDarkTheme) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = when (selectedTab) {
+                                0 -> "GameSS主页"
+                                1 -> "文件管理&映射"
+                                else -> "系统设置"
+                            }
+                        )
+                    },
+                    actions = {
+                        if (selectedTab == 1) {
+                            TextButton(onClick = { showCreateTaskDialogInTab1 = true }) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = "添加映射"
+                                )
+                                Text("添加映射")
+                            }
+                        } else if (selectedTab == 2) {
+                            TextButton(onClick = { showResetDialog = true }) {
+                                Icon(
+                                    imageVector = Icons.Default.Refresh,
+                                    contentDescription = "重置",
+                                    tint = MaterialTheme.colorScheme.error
+                                )
+                                Text("重置", color = MaterialTheme.colorScheme.error)
+                            }
                         }
                     }
+                )
+            },
+            bottomBar = {
+                NavigationBar {
+                    NavigationBarItem(
+                        selected = selectedTab == 0,
+                        onClick = { selectedTab = 0 },
+                        icon = { Icon(Icons.Default.Home, contentDescription = "主页") },
+                        label = { Text("主页") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 1,
+                        onClick = { selectedTab = 1 },
+                        icon = { Icon(Icons.Default.Folder, contentDescription = "文件管理") },
+                        label = { Text("文件管理") }
+                    )
+                    NavigationBarItem(
+                        selected = selectedTab == 2,
+                        onClick = { selectedTab = 2 },
+                        icon = { Icon(Icons.Default.Settings, contentDescription = "设置") },
+                        label = { Text("设置") }
+                    )
                 }
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "主页") },
-                    label = { Text("主页") }
+            },
+            modifier = modifier
+        ) { innerPadding ->
+            when (selectedTab) {
+                0 -> HomeScreen(
+                    server = currentServer,
+                    shareName = shareName,
+                    taskList = taskList,
+                    activeTaskId = activeTaskId,
+                    onActiveTaskSelected = { newTaskId ->
+                        activeTaskId = newTaskId
+                        prefsManager.saveActiveTaskId(newTaskId)
+                    },
+                    onTaskDeleted = { taskToDelete ->
+                        val updated = taskList.filter { it.id != taskToDelete.id }
+                        taskList = updated
+                        prefsManager.saveTaskList(updated)
+                        if (activeTaskId == taskToDelete.id) {
+                            val nextId = updated.firstOrNull()?.id ?: "default-game-slot"
+                            activeTaskId = nextId
+                            prefsManager.saveActiveTaskId(nextId)
+                        }
+                    },
+                    onTaskRenamed = { targetTask, newTaskId ->
+                        val updated = taskList.map {
+                            if (it.id == targetTask.id) it.copy(id = newTaskId, displayName = newTaskId) else it
+                        }
+                        taskList = updated
+                        prefsManager.saveTaskList(updated)
+                        if (activeTaskId == targetTask.id) {
+                            activeTaskId = newTaskId
+                            prefsManager.saveActiveTaskId(newTaskId)
+                        }
+                    },
+                    modifier = Modifier.padding(innerPadding)
                 )
-                NavigationBarItem(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    icon = { Icon(Icons.Default.Folder, contentDescription = "文件管理") },
-                    label = { Text("文件管理") }
-                )
-                NavigationBarItem(
-                    selected = selectedTab == 2,
-                    onClick = { selectedTab = 2 },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = "设置") },
-                    label = { Text("设置") }
+                1 -> {
+                    val activeTask = taskList.find { it.id == activeTaskId } ?: taskList.firstOrNull() ?: SyncTask(
+                        id = "default-game-slot",
+                        displayName = "默认游戏存档",
+                        localUri = defaultLocalPath,
+                        serverId = currentServer.id,
+                        remotePath = "GameSS"
+                    )
+                    FileManagerScreen(
+                        server = currentServer,
+                        shareName = shareName,
+                        currentTask = activeTask,
+                        showHiddenFiles = showHiddenFiles,
+                        showCreateTaskDialog = showCreateTaskDialogInTab1,
+                        onTaskCreated = { newTask ->
+                            val updated = taskList.filter { it.id != newTask.id } + newTask
+                            taskList = updated
+                            activeTaskId = newTask.id
+                            prefsManager.saveTaskList(updated)
+                            prefsManager.saveActiveTaskId(newTask.id)
+                            showCreateTaskDialogInTab1 = false
+                            selectedTab = 0 // 映射成功后返回主页
+                        },
+                        onDismissCreateTaskDialog = {
+                            showCreateTaskDialogInTab1 = false
+                        },
+                        modifier = Modifier.padding(innerPadding)
+                    )
+                }
+                else -> SettingsScreen(
+                    server = currentServer,
+                    shareName = shareName,
+                    showHiddenFiles = showHiddenFiles,
+                    themeMode = themeMode,
+                    onServerChanged = { newServer, newShare ->
+                        currentServer = newServer
+                        shareName = newShare
+                        prefsManager.saveServer(newServer, newShare)
+                    },
+                    onShowHiddenFilesChanged = { show ->
+                        showHiddenFiles = show
+                        prefsManager.setShowHiddenFiles(show)
+                    },
+                    onThemeModeChanged = { mode ->
+                        themeMode = mode
+                        prefsManager.setThemeMode(mode)
+                        onThemeModeChanged(mode)
+                    },
+                    modifier = Modifier.padding(innerPadding)
                 )
             }
-        },
-        modifier = modifier
-    ) { innerPadding ->
-        when (selectedTab) {
-            0 -> HomeScreen(
-                server = currentServer,
-                task = currentTask,
-                shareName = shareName,
-                modifier = Modifier.padding(innerPadding)
-            )
-            1 -> FileManagerScreen(
-                server = currentServer,
-                shareName = shareName,
-                currentTask = currentTask,
-                onTaskCreated = { newTask ->
-                    currentTask = newTask
-                    prefsManager.saveTask(newTask)
-                    selectedTab = 0 // 映射成功后返回主页
-                },
-                modifier = Modifier.padding(innerPadding)
-            )
-            else -> SettingsScreen(
-                server = currentServer,
-                shareName = shareName,
-                onServerChanged = { newServer, newShare ->
-                    currentServer = newServer
-                    shareName = newShare
-                    prefsManager.saveServer(newServer, newShare)
-                },
-                onResetAll = {
-                    showResetDialog = true
-                },
-                modifier = Modifier.padding(innerPadding)
-            )
         }
     }
 
@@ -128,7 +210,10 @@ fun MainScreen(modifier: Modifier = Modifier) {
                         val (resetServer, resetShare) = prefsManager.loadServer()
                         currentServer = resetServer
                         shareName = resetShare
-                        currentTask = prefsManager.loadTask(defaultLocalPath)
+                        taskList = prefsManager.loadTaskList(defaultLocalPath)
+                        activeTaskId = prefsManager.getActiveTaskId()
+                        showHiddenFiles = prefsManager.getShowHiddenFiles()
+                        themeMode = prefsManager.getThemeMode()
                         showResetDialog = false
                     }
                 ) {

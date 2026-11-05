@@ -4,56 +4,92 @@ import com.sumiri.gss.data.model.FileEntry
 import com.sumiri.gss.data.model.Manifest
 
 /**
- * 增量同步 Diff 结果
+ * 3-Way (Base, Local, Remote) 三方增量 Diff 对比结果
  */
-data class DiffResult(
-    val toUpload: List<FileEntry>,   // 本地新增或修改的文件（需推送）
-    val toDownload: List<FileEntry>, // 远端新增或修改的文件（需拉取）
-    val toDeleteLocal: List<FileEntry>, // 远端已删除，拉取时本地需同步删除的文件
-    val unchanged: List<FileEntry>   // 未变动的文件
+data class Diff3WayResult(
+    val pushUpload: List<FileEntry>,        // 本地新增或被修改，推送时需上传到远端
+    val pushDeleteRemote: List<FileEntry>,  // 本地已删除，推送时需在远端删除
+    val pullDownload: List<FileEntry>,      // 远端新增或被修改，拉取时需下载到本地
+    val pullDeleteLocal: List<FileEntry>    // 远端已删除，拉取时需在本地删除
 )
 
 object DiffEngine {
 
     /**
-     * 对比本地 Manifest 和远端 Manifest
+     * 核心 3-Way 三方增量 Diff 算法 (Git 级基准对比)
+     * @param base 上一次同步成功时的标准快照
+     * @param local 本地当前文件状态
+     * @param remote 远端当前文件状态
      */
-    fun compare(local: Manifest?, remote: Manifest?): DiffResult {
+    fun compare3Way(base: Manifest?, local: Manifest?, remote: Manifest?): Diff3WayResult {
+        val baseMap = base?.files?.associateBy { it.relativePath } ?: emptyMap()
         val localMap = local?.files?.associateBy { it.relativePath } ?: emptyMap()
         val remoteMap = remote?.files?.associateBy { it.relativePath } ?: emptyMap()
 
-        val toUpload = mutableListOf<FileEntry>()
-        val toDownload = mutableListOf<FileEntry>()
-        val unchanged = mutableListOf<FileEntry>()
+        val pushUpload = mutableListOf<FileEntry>()
+        val pushDeleteRemote = mutableListOf<FileEntry>()
+        val pullDownload = mutableListOf<FileEntry>()
+        val pullDeleteLocal = mutableListOf<FileEntry>()
 
-        // 1. 遍历本地文件
+        // ==================== 1. 分析本地变动 (Push 视角: Local vs Base) ====================
         for ((relativePath, localFile) in localMap) {
+            val baseFile = baseMap[relativePath]
             val remoteFile = remoteMap[relativePath]
-            if (remoteFile == null) {
-                // 远端没有，需要上传
-                toUpload.add(localFile)
-            } else if (localFile.md5 != remoteFile.md5) {
-                // MD5 不一致，发生了修改
-                toUpload.add(localFile)     // 推送时用 localFile
-                toDownload.add(remoteFile)   // 拉取时用 remoteFile
-            } else {
-                unchanged.add(localFile)
+
+            if (baseFile == null) {
+                // 情况 1: 本地新增
+                if (remoteFile == null || localFile.md5 != remoteFile.md5) {
+                    pushUpload.add(localFile)
+                }
+            } else if (localFile.md5 != baseFile.md5) {
+                // 情况 2: 本地被修改
+                if (remoteFile == null || localFile.lastModified >= remoteFile.lastModified) {
+                    pushUpload.add(localFile)
+                }
             }
         }
 
-        // 2. 遍历远端独有的文件
-        for ((relativePath, remoteFile) in remoteMap) {
+        // 分析本地删除项: Base 中存在，但 Local 中被删除了
+        for ((relativePath, baseFile) in baseMap) {
             if (!localMap.containsKey(relativePath)) {
-                // 本地没有，需要下载
-                toDownload.add(remoteFile)
+                if (remoteMap.containsKey(relativePath)) {
+                    pushDeleteRemote.add(baseFile)
+                }
             }
         }
 
-        return DiffResult(
-            toUpload = toUpload,
-            toDownload = toDownload,
-            toDeleteLocal = emptyList(), // 可后续完善删除逻辑
-            unchanged = unchanged
+        // ==================== 2. 分析远端变动 (Pull 视角: Remote vs Base) ====================
+        for ((relativePath, remoteFile) in remoteMap) {
+            val baseFile = baseMap[relativePath]
+            val localFile = localMap[relativePath]
+
+            if (baseFile == null) {
+                // 情况 1: 远端新增
+                if (localFile == null || remoteFile.md5 != localFile.md5) {
+                    pullDownload.add(remoteFile)
+                }
+            } else if (remoteFile.md5 != baseFile.md5) {
+                // 情况 2: 远端被修改
+                if (localFile == null || remoteFile.lastModified >= localFile.lastModified) {
+                    pullDownload.add(remoteFile)
+                }
+            }
+        }
+
+        // 分析远端删除项: Base 中存在，但 Remote 中被删除了
+        for ((relativePath, baseFile) in baseMap) {
+            if (!remoteMap.containsKey(relativePath)) {
+                if (localMap.containsKey(relativePath)) {
+                    pullDeleteLocal.add(baseFile)
+                }
+            }
+        }
+
+        return Diff3WayResult(
+            pushUpload = pushUpload.distinctBy { it.relativePath },
+            pushDeleteRemote = pushDeleteRemote.distinctBy { it.relativePath },
+            pullDownload = pullDownload.distinctBy { it.relativePath },
+            pullDeleteLocal = pullDeleteLocal.distinctBy { it.relativePath }
         )
     }
 }

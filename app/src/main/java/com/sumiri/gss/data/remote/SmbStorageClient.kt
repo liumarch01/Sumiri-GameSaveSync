@@ -19,7 +19,7 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * Windows 共享文件夹 (SMB 2/3) 客户端（支持中文友好报错与免密降级）
+ * Windows 共享文件夹 (SMB 2/3) 客户端（支持 3-Way 增量同步、新建/重命名/删除目录与中文报错）
  */
 class SmbStorageClient(private val gson: Gson = Gson()) {
 
@@ -58,6 +58,93 @@ class SmbStorageClient(private val gson: Gson = Gson()) {
                     )
                 }
             }
+        }.mapFailure { translateException(it) }
+    }
+
+    /**
+     * 在 SMB 远端创建新文件夹
+     */
+    suspend fun createDirectory(
+        server: RemoteServer,
+        shareName: String,
+        folderPath: String
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanPath = normalizePath(folderPath)
+            executeOnShare(server, shareName) { share ->
+                ensureDirectoriesExist(share, cleanPath)
+            }
+            Unit
+        }.mapFailure { translateException(it) }
+    }
+
+    /**
+     * 重命名 SMB 远端文件或文件夹
+     */
+    suspend fun renameItem(
+        server: RemoteServer,
+        shareName: String,
+        oldPath: String,
+        newName: String,
+        isDirectory: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanOld = normalizePath(oldPath)
+            val parent = getParentDirectory(cleanOld)
+            val cleanNew = if (parent.isBlank()) newName else "$parent/$newName"
+
+            executeOnShare(server, shareName) { share ->
+                if (isDirectory) {
+                    share.openDirectory(
+                        cleanOld,
+                        setOf(AccessMask.DELETE, AccessMask.GENERIC_WRITE),
+                        null,
+                        SMB2ShareAccess.ALL,
+                        SMB2CreateDisposition.FILE_OPEN,
+                        null
+                    ).use { dir ->
+                        dir.rename(cleanNew, true)
+                    }
+                } else {
+                    share.openFile(
+                        cleanOld,
+                        setOf(AccessMask.DELETE, AccessMask.GENERIC_WRITE),
+                        null,
+                        SMB2ShareAccess.ALL,
+                        SMB2CreateDisposition.FILE_OPEN,
+                        null
+                    ).use { file ->
+                        file.rename(cleanNew, true)
+                    }
+                }
+            }
+            Unit
+        }.mapFailure { translateException(it) }
+    }
+
+    /**
+     * 删除 SMB 远端文件或文件夹
+     */
+    suspend fun deleteItem(
+        server: RemoteServer,
+        shareName: String,
+        itemPath: String,
+        isDirectory: Boolean
+    ): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val cleanPath = normalizePath(itemPath)
+            executeOnShare(server, shareName) { share ->
+                if (isDirectory) {
+                    if (share.folderExists(cleanPath)) {
+                        share.rmdir(cleanPath, true)
+                    }
+                } else {
+                    if (share.fileExists(cleanPath)) {
+                        share.rm(cleanPath)
+                    }
+                }
+            }
+            Unit
         }.mapFailure { translateException(it) }
     }
 
