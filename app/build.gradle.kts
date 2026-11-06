@@ -12,14 +12,22 @@ android {
         applicationId = "com.sumiri.gss"
         minSdk = 26
         targetSdk = 35
-        versionCode = 20261105
-        versionName = "0.0.1"
+        versionCode = 20261106
+        versionName = "0.0.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            isV1SigningEnabled = true
+            isV2SigningEnabled = true
+        }
+    }
+
     buildTypes {
         release {
+            signingConfig = signingConfigs.getByName("debug")
             optimization {
                 enable = false
             }
