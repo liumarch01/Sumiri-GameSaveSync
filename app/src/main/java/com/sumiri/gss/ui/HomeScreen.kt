@@ -50,7 +50,7 @@ fun HomeScreen(
     val scrollState = rememberScrollState()
 
     var isOperating by remember { mutableStateOf(false) }
-    var logText by remember { mutableStateOf("准备就绪。可在顶部卡片管理或切换映射任务。") }
+    var logText by remember { mutableStateOf("准备就绪。可在【文件管理&映射】中添加更多游戏存档映射。") }
     var showTaskManageDialog by remember { mutableStateOf(false) }
 
     // 长按绑定的 Task 菜单项目
@@ -69,17 +69,17 @@ fun HomeScreen(
 
     val isSyncAllMode = activeTaskId == TASK_SYNC_ALL_ID
     val currentTask = remember(taskList, activeTaskId) {
-        taskList.find { it.id == activeTaskId } ?: taskList.firstOrNull() ?: SyncTask(
-            id = "default",
-            displayName = "默认任务",
-            localUri = context.filesDir.absolutePath,
-            serverId = server.id,
-            remotePath = "GameSS"
-        )
+        taskList.find { it.id == activeTaskId } ?: taskList.firstOrNull()
     }
 
     // 后台连通性预检与 3-Way 变动检测
-    LaunchedEffect(currentTask, server, shareName, isSyncAllMode, refreshTrigger) {
+    LaunchedEffect(currentTask, taskList, server, shareName, isSyncAllMode, refreshTrigger) {
+        if (taskList.isEmpty()) {
+            autoCheckTip = "当前无任何规则，请先在‘文件管理’中添加映射"
+            isSmbAvailable = false
+            return@LaunchedEffect
+        }
+
         if (server.baseUrl.isBlank()) {
             autoCheckTip = "请先在【设置】中配置 Windows 电脑 IP 地址"
             isSmbAvailable = false
@@ -100,7 +100,7 @@ fun HomeScreen(
 
         isSmbAvailable = true
 
-        if (!isSyncAllMode) {
+        if (!isSyncAllMode && currentTask != null) {
             val localDir = File(currentTask.localUri)
             val localManifest = LocalFileEngine.generateManifest(currentTask.id, localDir)
             val remoteManifest = smbClient.readManifest(server, shareName, currentTask.remotePath).getOrNull()
@@ -149,9 +149,12 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.primary
                     )
                     Spacer(modifier = Modifier.height(4.dp))
-                    if (isSyncAllMode) {
+                    if (taskList.isEmpty()) {
+                        Text("当前无任何映射规则", style = MaterialTheme.typography.titleLarge)
+                        Text("请先在【文件管理&映射】中添加规则", style = MaterialTheme.typography.bodySmall)
+                    } else if (isSyncAllMode) {
                         Text("全选所有任务 (${taskList.size} 个)", style = MaterialTheme.typography.titleLarge)
-                    } else {
+                    } else if (currentTask != null) {
                         Text("Task ID: ${currentTask.id}", style = MaterialTheme.typography.titleLarge)
                         Text("本地路径: ${currentTask.localUri}", style = MaterialTheme.typography.bodySmall)
                         Text("远端目录: ${server.baseUrl}/$shareName/${currentTask.remotePath}", style = MaterialTheme.typography.bodySmall)
@@ -163,7 +166,7 @@ fun HomeScreen(
 
         // 自动检测与刷新卡片
         autoCheckTip?.let { tipText ->
-            val isError = !isSmbAvailable && server.baseUrl.isNotBlank()
+            val isError = taskList.isEmpty() || (!isSmbAvailable && server.baseUrl.isNotBlank())
             Surface(
                 color = if (isError) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = MaterialTheme.shapes.small,
@@ -196,7 +199,7 @@ fun HomeScreen(
                     )
                     IconButton(
                         onClick = { refreshTrigger++ },
-                        enabled = !isCheckingDiff
+                        enabled = !isCheckingDiff && taskList.isNotEmpty()
                     ) {
                         Icon(
                             imageVector = Icons.Default.Refresh,
@@ -216,7 +219,7 @@ fun HomeScreen(
                 onClick = {
                     coroutineScope.launch {
                         isOperating = true
-                        val tasksToSync = if (isSyncAllMode) taskList else listOf(currentTask)
+                        val tasksToSync = if (isSyncAllMode) taskList else listOfNotNull(currentTask)
                         for ((index, taskItem) in tasksToSync.withIndex()) {
                             val targetLocalDir = File(taskItem.localUri)
                             targetLocalDir.mkdirs()
@@ -243,7 +246,7 @@ fun HomeScreen(
                 onClick = {
                     coroutineScope.launch {
                         isOperating = true
-                        val tasksToSync = if (isSyncAllMode) taskList else listOf(currentTask)
+                        val tasksToSync = if (isSyncAllMode) taskList else listOfNotNull(currentTask)
                         for ((index, taskItem) in tasksToSync.withIndex()) {
                             val targetLocalDir = File(taskItem.localUri)
                             targetLocalDir.mkdirs()
@@ -292,79 +295,94 @@ fun HomeScreen(
             onDismissRequest = { showTaskManageDialog = false },
             title = { Text("映射任务管理") },
             text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    // 全选所有任务
-                    Surface(
-                        color = if (isSyncAllMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                        shape = MaterialTheme.shapes.small,
+                if (taskList.isEmpty()) {
+                    Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable {
-                                onActiveTaskSelected(TASK_SYNC_ALL_ID)
-                                showTaskManageDialog = false
-                            }
+                            .padding(vertical = 24.dp),
+                        contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "全选所有任务 (${taskList.size} 个)",
-                            modifier = Modifier.padding(12.dp),
-                            style = MaterialTheme.typography.bodyMedium
+                            text = "当前无任何规则，请先在‘文件管理’中添加映射",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-
-                    HorizontalDivider()
-
-                    taskList.forEach { task ->
-                        val isSelected = !isSyncAllMode && task.id == currentTask.id
-                        Box(modifier = Modifier.fillMaxWidth()) {
-                            Surface(
-                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                                shape = MaterialTheme.shapes.small,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .combinedClickable(
-                                        onClick = {
-                                            onActiveTaskSelected(task.id)
-                                            showTaskManageDialog = false
-                                        },
-                                        onLongClick = {
-                                            taskForMenu = task
-                                        }
-                                    )
-                            ) {
-                                Column(modifier = Modifier.padding(12.dp)) {
-                                    Text("Task ID: ${task.id}", style = MaterialTheme.typography.titleSmall)
-                                    Text("本地: ${task.localUri}", style = MaterialTheme.typography.bodySmall)
-                                    Text("远端: ${task.remotePath}", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        // 全选所有任务
+                        Surface(
+                            color = if (isSyncAllMode) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                            shape = MaterialTheme.shapes.small,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    onActiveTaskSelected(TASK_SYNC_ALL_ID)
+                                    showTaskManageDialog = false
                                 }
-                            }
+                        ) {
+                            Text(
+                                text = "全选所有任务 (${taskList.size} 个)",
+                                modifier = Modifier.padding(12.dp),
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        }
 
-                            // 靠右紧贴任务卡片右侧的长按浮动菜单 (图 2 样式)
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.CenterEnd)
-                                    .padding(end = 4.dp)
-                            ) {
-                                DropdownMenu(
-                                    expanded = (taskForMenu?.id == task.id),
-                                    onDismissRequest = { taskForMenu = null }
+                        HorizontalDivider()
+
+                        taskList.forEach { task ->
+                            val isSelected = !isSyncAllMode && task.id == currentTask?.id
+                            Box(modifier = Modifier.fillMaxWidth()) {
+                                Surface(
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                                    shape = MaterialTheme.shapes.small,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .combinedClickable(
+                                            onClick = {
+                                                onActiveTaskSelected(task.id)
+                                                showTaskManageDialog = false
+                                            },
+                                            onLongClick = {
+                                                taskForMenu = task
+                                            }
+                                        )
                                 ) {
-                                    DropdownMenuItem(
-                                        text = { Text("修改 Task ID 名称") },
-                                        leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                                        onClick = {
-                                            showRenameTaskDialog = true
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("删除映射任务", color = MaterialTheme.colorScheme.error) },
-                                        leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
-                                        onClick = {
-                                            showDeleteConfirmDialog = true
-                                        }
-                                    )
+                                    Column(modifier = Modifier.padding(12.dp)) {
+                                        Text("Task ID: ${task.id}", style = MaterialTheme.typography.titleSmall)
+                                        Text("本地: ${task.localUri}", style = MaterialTheme.typography.bodySmall)
+                                        Text("远端: ${task.remotePath}", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                }
+
+                                // 靠右紧贴任务卡片右侧的长按浮动菜单
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.CenterEnd)
+                                        .padding(end = 4.dp)
+                                ) {
+                                    DropdownMenu(
+                                        expanded = (taskForMenu?.id == task.id),
+                                        onDismissRequest = { taskForMenu = null }
+                                    ) {
+                                        DropdownMenuItem(
+                                            text = { Text("修改 Task ID 名称") },
+                                            leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                                            onClick = {
+                                                showRenameTaskDialog = true
+                                            }
+                                        )
+                                        DropdownMenuItem(
+                                            text = { Text("删除映射任务", color = MaterialTheme.colorScheme.error) },
+                                            leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                                            onClick = {
+                                                showDeleteConfirmDialog = true
+                                            }
+                                        )
+                                    }
                                 }
                             }
                         }

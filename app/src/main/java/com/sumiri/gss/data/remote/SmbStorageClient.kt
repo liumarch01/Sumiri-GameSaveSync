@@ -19,7 +19,7 @@ import java.io.InputStream
 import java.io.OutputStream
 
 /**
- * Windows 共享文件夹 (SMB 2/3) 客户端（支持 3-Way 增量同步、新建/重命名/删除目录与中文报错）
+ * Windows 共享文件夹 (SMB 2/3) 客户端（带 D$ 与 Administrator 自动兜底）
  */
 class SmbStorageClient(private val gson: Gson = Gson()) {
 
@@ -259,8 +259,8 @@ class SmbStorageClient(private val gson: Gson = Gson()) {
         return Result.failure(transform(exception))
     }
 
-    private fun readFileToString(server: RemoteServer, shareName: String, remoteFilePath: String): String? {
-        return executeOnShare(server, shareName) { share ->
+    private fun readFileToString(server: RemoteServer, rawShareName: String, remoteFilePath: String): String? {
+        return executeOnShare(server, rawShareName) { share ->
             if (!share.fileExists(remoteFilePath)) {
                 return@executeOnShare null
             }
@@ -270,8 +270,8 @@ class SmbStorageClient(private val gson: Gson = Gson()) {
         }
     }
 
-    private fun writeStringToFile(server: RemoteServer, shareName: String, remoteFilePath: String, content: String) {
-        executeOnShare(server, shareName) { share ->
+    private fun writeStringToFile(server: RemoteServer, rawShareName: String, remoteFilePath: String, content: String) {
+        executeOnShare(server, rawShareName) { share ->
             ensureDirectoriesExist(share, getParentDirectory(remoteFilePath))
             openFileForWrite(share, remoteFilePath).use { file ->
                 file.outputStream.bufferedWriter().use { it.write(content) }
@@ -279,21 +279,27 @@ class SmbStorageClient(private val gson: Gson = Gson()) {
         }
     }
 
-    private fun <T> executeOnShare(server: RemoteServer, shareName: String, block: (DiskShare) -> T): T {
+    /**
+     * 执行 SMB 操作（包含 D$ 共享名与 Administrator 用户名自动兜底）
+     */
+    private fun <T> executeOnShare(rawServer: RemoteServer, rawShareName: String, block: (DiskShare) -> T): T {
+        val effectiveShare = rawShareName.ifBlank { "D$" }
+        val effectiveServer = rawServer.copy(username = rawServer.username.ifBlank { "Administrator" })
+
         SMBClient().use { client ->
-            val connection = client.connect(server.baseUrl)
-            val session = authenticateWithFallback(connection, server)
-            (session.connectShare(shareName) as DiskShare).use { share ->
+            val connection = client.connect(effectiveServer.baseUrl)
+            val session = authenticateWithFallback(connection, effectiveServer)
+            (session.connectShare(effectiveShare) as DiskShare).use { share ->
                 return block(share)
             }
         }
     }
 
     private fun authenticateWithFallback(connection: Connection, server: RemoteServer): Session {
-        val username = server.username.trim()
+        val username = server.username.trim().ifBlank { "Administrator" }
         val password = server.password
 
-        if (username.isEmpty() || username.equals("guest", ignoreCase = true)) {
+        if (username.equals("guest", ignoreCase = true)) {
             return runCatching { connection.authenticate(AuthenticationContext.anonymous()) }
                 .getOrElse { connection.authenticate(AuthenticationContext.guest()) }
         }

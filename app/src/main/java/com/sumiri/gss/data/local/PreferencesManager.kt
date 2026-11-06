@@ -23,7 +23,7 @@ class PreferencesManager(context: Context) {
 
     fun loadServer(): Pair<RemoteServer, String> {
         val ip = prefs.getString("server_ip", "") ?: ""
-        val share = prefs.getString("server_share", "D$") ?: "D$"
+        val share = prefs.getString("server_share", "") ?: ""
         val user = prefs.getString("server_user", "") ?: ""
         val pass = prefs.getString("server_pass", "") ?: ""
 
@@ -46,14 +46,7 @@ class PreferencesManager(context: Context) {
     fun loadTaskList(defaultLocalPath: String): List<SyncTask> {
         val json = prefs.getString("task_list_json", null)
         if (json.isNull_or_blank()) {
-            val defaultTask = SyncTask(
-                id = "default-game-slot",
-                displayName = "默认游戏存档",
-                localUri = defaultLocalPath,
-                serverId = "default_server",
-                remotePath = "GameSS"
-            )
-            return listOf(defaultTask)
+            return emptyList() // 取消默认规则，由用户手动添加
         }
         val type = object : TypeToken<List<SyncTask>>() {}.type
         return gson.fromJson(json, type) ?: emptyList()
@@ -64,7 +57,7 @@ class PreferencesManager(context: Context) {
     }
 
     fun getActiveTaskId(): String {
-        return prefs.getString("active_task_id", "default-game-slot") ?: "default-game-slot"
+        return prefs.getString("active_task_id", "") ?: ""
     }
 
     fun setShowHiddenFiles(show: Boolean) {

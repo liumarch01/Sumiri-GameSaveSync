@@ -1,6 +1,8 @@
 package com.sumiri.gss.ui
 
+import android.app.Activity
 import android.os.Environment
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
@@ -28,6 +30,15 @@ fun MainScreen(
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: 主页, 1: 文件管理, 2: 设置
 
+    // 系统返回手势/按键拦截逻辑
+    BackHandler(enabled = selectedTab == 0) {
+        (context as? Activity)?.moveTaskToBack(true)
+    }
+
+    BackHandler(enabled = selectedTab == 2) {
+        selectedTab = 0
+    }
+
     // 主题控制
     var themeMode by remember { mutableStateOf(prefsManager.getThemeMode()) }
     val isDarkTheme = when (themeMode) {
@@ -44,7 +55,7 @@ fun MainScreen(
     // 加载隐藏文件显示设置
     var showHiddenFiles by remember { mutableStateOf(prefsManager.getShowHiddenFiles()) }
 
-    // 加载 Task ID 任务映射列表与当前激活 ID
+    // 加载 Task ID 任务映射列表与当前激活 ID（取消默认规则，未添加时为空列表）
     val defaultLocalPath = remember { Environment.getExternalStorageDirectory().absolutePath }
     var taskList by remember { mutableStateOf(prefsManager.loadTaskList(defaultLocalPath)) }
     var activeTaskId by remember { mutableStateOf(prefsManager.getActiveTaskId()) }
@@ -126,7 +137,7 @@ fun MainScreen(
                         taskList = updated
                         prefsManager.saveTaskList(updated)
                         if (activeTaskId == taskToDelete.id) {
-                            val nextId = updated.firstOrNull()?.id ?: "default-game-slot"
+                            val nextId = updated.firstOrNull()?.id ?: ""
                             activeTaskId = nextId
                             prefsManager.saveActiveTaskId(nextId)
                         }
@@ -146,8 +157,8 @@ fun MainScreen(
                 )
                 1 -> {
                     val activeTask = taskList.find { it.id == activeTaskId } ?: taskList.firstOrNull() ?: SyncTask(
-                        id = "default-game-slot",
-                        displayName = "默认游戏存档",
+                        id = "new-task",
+                        displayName = "新建任务",
                         localUri = defaultLocalPath,
                         serverId = currentServer.id,
                         remotePath = "GameSS"
@@ -169,6 +180,9 @@ fun MainScreen(
                         },
                         onDismissCreateTaskDialog = {
                             showCreateTaskDialogInTab1 = false
+                        },
+                        onNavigateToHome = {
+                            selectedTab = 0
                         },
                         modifier = Modifier.padding(innerPadding)
                     )

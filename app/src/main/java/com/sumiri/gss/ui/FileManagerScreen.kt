@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -46,12 +47,32 @@ fun FileManagerScreen(
     showCreateTaskDialog: Boolean,
     onTaskCreated: (SyncTask) -> Unit,
     onDismissCreateTaskDialog: () -> Unit,
+    onNavigateToHome: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
     var selectedTab by remember { mutableIntStateOf(0) } // 0: 本地, 1: 远端 SMB
+
+    // 本地真根目录路径层级管理 (/storage/emulated/0/)
+    val rootDir = remember { Environment.getExternalStorageDirectory() }
+    var currentLocalDir by remember { mutableStateOf(rootDir) }
+
+    // 远端 SMB 目录路径层级管理
+    var currentRemotePath by remember { mutableStateOf("") }
+
+    // 系统返回手势/按键拦截逻辑
+    BackHandler {
+        if (selectedTab == 0 && currentLocalDir.parentFile != null && currentLocalDir != rootDir) {
+            currentLocalDir = currentLocalDir.parentFile ?: rootDir
+        } else if (selectedTab == 1 && currentRemotePath.isNotBlank()) {
+            val lastSlash = currentRemotePath.lastIndexOf('/')
+            currentRemotePath = if (lastSlash > 0) currentRemotePath.substring(0, lastSlash) else ""
+        } else {
+            onNavigateToHome()
+        }
+    }
     var showNewFolderDialog by remember { mutableStateOf(false) }
 
     // 长按选中的文件项与弹窗
@@ -85,13 +106,6 @@ fun FileManagerScreen(
             permissions[Manifest.permission.READ_EXTERNAL_STORAGE] == true
         }
     }
-
-    // 本地真根目录路径层级管理 (/storage/emulated/0/)
-    val rootDir = remember { Environment.getExternalStorageDirectory() }
-    var currentLocalDir by remember { mutableStateOf(rootDir) }
-
-    // 远端 SMB 目录路径层级管理
-    var currentRemotePath by remember { mutableStateOf("") }
 
     val localFiles = remember(currentLocalDir, hasStoragePermission, showHiddenFiles, refreshCounter) {
         if (!hasStoragePermission) emptyList()

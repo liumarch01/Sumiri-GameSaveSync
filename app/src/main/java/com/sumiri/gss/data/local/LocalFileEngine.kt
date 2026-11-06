@@ -7,21 +7,29 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.InputStream
 import java.security.MessageDigest
+import kotlin.math.abs
 
 /**
- * 本地文件处理与 MD5 计算引擎
+ * 本地文件处理与 MD5 增量计算引擎
  */
 object LocalFileEngine {
 
     /**
-     * 遍历本地文件夹并生成包含所有文件 MD5 的 Manifest 清单
+     * 遍历本地文件夹并生成包含所有文件 MD5 的 Manifest 清单（带有时间戳/大小快速复用机制）
      * @param taskId 任务 ID
      * @param baseDir 本地游戏存档根目录 File
+     * @param cachedManifest 上一次已计算的 Manifest 缓存（可选）
      */
-    suspend fun generateManifest(taskId: String, baseDir: File): Manifest = withContext(Dispatchers.IO) {
+    suspend fun generateManifest(
+        taskId: String,
+        baseDir: File,
+        cachedManifest: Manifest? = null
+    ): Manifest = withContext(Dispatchers.IO) {
+        val cachedMap = cachedManifest?.files?.associateBy { it.relativePath } ?: emptyMap()
         val fileEntries = mutableListOf<FileEntry>()
+
         if (baseDir.exists() && baseDir.isDirectory) {
-            traverseDirectory(baseDir, baseDir, fileEntries)
+            traverseDirectory(baseDir, baseDir, cachedMap, fileEntries)
         }
         Manifest(
             taskId = taskId,
@@ -50,20 +58,34 @@ object LocalFileEngine {
         return file.inputStream().use { calculateMd5(it) }
     }
 
-    private fun traverseDirectory(rootDir: File, currentDir: File, result: MutableList<FileEntry>) {
+    private fun traverseDirectory(
+        rootDir: File,
+        currentDir: File,
+        cachedMap: Map<String, FileEntry>,
+        result: MutableList<FileEntry>
+    ) {
         val files = currentDir.listFiles() ?: return
         for (file in files) {
             if (file.isDirectory) {
-                traverseDirectory(rootDir, file, result)
+                traverseDirectory(rootDir, file, cachedMap, result)
             } else if (file.isFile) {
-                // 计算相对路径，如 "saves/slot1.sav"
                 val relativePath = rootDir.toPath().relativize(file.toPath()).toString().replace('\\', '/')
-                val md5 = calculateMd5(file)
+                val size = file.length()
+                val lastModified = file.lastModified()
+
+                // 时间戳与大小校验预判：如果与缓存完全匹配，跳过高昂的 MD5 文件流重算
+                val cachedFile = cachedMap[relativePath]
+                val md5 = if (cachedFile != null && cachedFile.size == size && abs(cachedFile.lastModified - lastModified) < 1000L) {
+                    cachedFile.md5
+                } else {
+                    calculateMd5(file)
+                }
+
                 result.add(
                     FileEntry(
                         relativePath = relativePath,
-                        size = file.length(),
-                        lastModified = file.lastModified(),
+                        size = size,
+                        lastModified = lastModified,
                         md5 = md5
                     )
                 )

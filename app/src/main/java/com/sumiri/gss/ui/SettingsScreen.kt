@@ -39,6 +39,7 @@ fun SettingsScreen(
     var showThemeDialog by remember { mutableStateOf(false) }
 
     val smbClient = remember { SmbStorageClient() }
+    val listItemColors = ListItemDefaults.colors(containerColor = MaterialTheme.colorScheme.background)
 
     Column(
         modifier = modifier
@@ -61,7 +62,7 @@ fun SettingsScreen(
                     onServerChanged(server.copy(baseUrl = it), shareInput)
                 },
                 label = { Text("Windows 电脑局域网 IP 地址") },
-                placeholder = { Text("例如: 192.168.1.100") },
+                placeholder = { Text("例如: 192.168.1.91") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -72,8 +73,8 @@ fun SettingsScreen(
                     shareInput = it
                     onServerChanged(server, it)
                 },
-                label = { Text("共享文件夹名称 (整盘共享填 D$ 或 D)") },
-                placeholder = { Text("例如: D$ 或 GameSaves") },
+                label = { Text("共享文件夹名称") },
+                placeholder = { Text("例如: D$(整个D盘) 或 GameSaves") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -84,7 +85,7 @@ fun SettingsScreen(
                     username = it
                     onServerChanged(server.copy(username = it), shareInput)
                 },
-                label = { Text("Windows 账号用户名 (无密码账户可留空)") },
+                label = { Text("Windows 账号用户名") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
@@ -106,13 +107,15 @@ fun SettingsScreen(
                 onClick = {
                     coroutineScope.launch {
                         isTesting = true
-                        testResult = "正在连接到 $ipAddress/$shareInput ..."
+                        val effectiveShare = shareInput.ifBlank { "D$" }
+                        val effectiveUsername = username.ifBlank { "Administrator" }
+                        testResult = "正在连接到 $ipAddress/$effectiveShare ..."
                         val newServer = server.copy(
                             baseUrl = ipAddress,
-                            username = username,
+                            username = effectiveUsername,
                             password = password
                         )
-                        val res = smbClient.testConnection(newServer, shareInput)
+                        val res = smbClient.testConnection(newServer, effectiveShare)
                         if (res.getOrDefault(false)) {
                             testResult = "连接成功！网络及共享访问正常。"
                         } else {
@@ -159,7 +162,8 @@ fun SettingsScreen(
                         checked = showHiddenFiles,
                         onCheckedChange = { onShowHiddenFilesChanged(it) }
                     )
-                }
+                },
+                colors = listItemColors
             )
 
             ListItem(
@@ -173,17 +177,20 @@ fun SettingsScreen(
                         }
                     )
                 },
+                colors = listItemColors,
                 modifier = Modifier.clickable { showThemeDialog = true }
             )
 
             ListItem(
                 headlineContent = { Text("系统语言") },
-                supportingContent = { Text("简体中文 (默认)") }
+                supportingContent = { Text("简体中文 (默认)") },
+                colors = listItemColors
             )
 
             ListItem(
                 headlineContent = { Text("关于 GameSaveSync (GameSS)") },
-                supportingContent = { Text("版本 0.0.1") }
+                supportingContent = { Text("版本 0.0.2") },
+                colors = listItemColors
             )
         }
     }
