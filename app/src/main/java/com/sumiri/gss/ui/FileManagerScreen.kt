@@ -7,16 +7,21 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -26,6 +31,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -34,8 +45,11 @@ import com.sumiri.gss.data.model.RemoteFileItem
 import com.sumiri.gss.data.model.RemoteServer
 import com.sumiri.gss.data.model.SyncTask
 import com.sumiri.gss.data.remote.SmbStorageClient
+import com.sumiri.gss.util.FileOpener
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -45,6 +59,12 @@ fun FileManagerScreen(
     currentTask: SyncTask,
     showHiddenFiles: Boolean,
     showCreateTaskDialog: Boolean,
+    currentLocalDir: File,
+    onLocalDirChange: (File) -> Unit,
+    currentRemotePath: String,
+    onRemotePathChange: (String) -> Unit,
+    activePane: Int,
+    onActivePaneChange: (Int) -> Unit,
     onTaskCreated: (SyncTask) -> Unit,
     onDismissCreateTaskDialog: () -> Unit,
     onNavigateToHome: () -> Unit = {},
@@ -53,32 +73,28 @@ fun FileManagerScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: 本地, 1: 远端 SMB
-
-    // 本地真根目录路径层级管理 (/storage/emulated/0/)
-    val rootDir = remember { Environment.getExternalStorageDirectory() }
-    var currentLocalDir by remember { mutableStateOf(rootDir) }
-
-    // 远端 SMB 目录路径层级管理
-    var currentRemotePath by remember { mutableStateOf("") }
-
-    // 系统返回手势/按键拦截逻辑
-    BackHandler {
-        if (selectedTab == 0 && currentLocalDir.parentFile != null && currentLocalDir != rootDir) {
-            currentLocalDir = currentLocalDir.parentFile ?: rootDir
-        } else if (selectedTab == 1 && currentRemotePath.isNotBlank()) {
-            val lastSlash = currentRemotePath.lastIndexOf('/')
-            currentRemotePath = if (lastSlash > 0) currentRemotePath.substring(0, lastSlash) else ""
-        } else {
-            onNavigateToHome()
-        }
-    }
     var showNewFolderDialog by remember { mutableStateOf(false) }
 
-    // 长按选中的文件项与弹窗
-    var itemForMenu by remember { mutableStateOf<RemoteFileItem?>(null) }
+    // 长按选中的文件项与弹窗 (isLocal, item)
+    var itemForMenu by remember { mutableStateOf<Pair<Boolean, RemoteFileItem>?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+
+    // 1秒自动取消/覆盖的 Toast 引用
+    var activeToast by remember { mutableStateOf<Toast?>(null) }
+
+    fun showFastToast(msg: String) {
+        activeToast?.cancel()
+        val toast = Toast.makeText(context, msg, Toast.LENGTH_SHORT)
+        activeToast = toast
+        toast.show()
+        coroutineScope.launch {
+            delay(1000L)
+            if (activeToast == toast) {
+                toast.cancel()
+            }
+        }
+    }
 
     // 刷新计数器
     var refreshCounter by remember { mutableIntStateOf(0) }
@@ -107,6 +123,21 @@ fun FileManagerScreen(
         }
     }
 
+    val rootDir = remember { Environment.getExternalStorageDirectory() }
+
+    // 系统返回手势/按键拦截逻辑
+    BackHandler {
+        if (activePane == 0 && currentLocalDir.parentFile != null && currentLocalDir != rootDir) {
+            onLocalDirChange(currentLocalDir.parentFile ?: rootDir)
+        } else if (activePane == 1 && currentRemotePath.isNotBlank()) {
+            val lastSlash = currentRemotePath.lastIndexOf('/')
+            val newRemote = if (lastSlash > 0) currentRemotePath.substring(0, lastSlash) else ""
+            onRemotePathChange(newRemote)
+        } else {
+            onNavigateToHome()
+        }
+    }
+
     val localFiles = remember(currentLocalDir, hasStoragePermission, showHiddenFiles, refreshCounter) {
         if (!hasStoragePermission) emptyList()
         else {
@@ -131,12 +162,14 @@ fun FileManagerScreen(
     var isRemoteLoading by remember { mutableStateOf(false) }
     var remoteError by remember { mutableStateOf<String?>(null) }
 
-    // 切换到远端 Tab 或远端路径变化时自动加载列表
-    LaunchedEffect(selectedTab, server, shareName, currentRemotePath, showHiddenFiles, refreshCounter) {
-        if (selectedTab == 1 && server.baseUrl.isNotBlank()) {
+    val effectiveShareName = remember(shareName) { shareName.ifBlank { "D$" } }
+
+    // 自动加载远端目录
+    LaunchedEffect(server, effectiveShareName, currentRemotePath, showHiddenFiles, refreshCounter) {
+        if (server.baseUrl.isNotBlank()) {
             isRemoteLoading = true
             remoteError = null
-            val res = smbClient.listRemoteFiles(server, shareName, currentRemotePath)
+            val res = smbClient.listRemoteFiles(server, effectiveShareName, currentRemotePath)
             res.onSuccess { list ->
                 remoteFiles = list
                     .filter { item -> showHiddenFiles || !isHiddenFile(item.name) }
@@ -150,18 +183,6 @@ fun FileManagerScreen(
 
     Box(modifier = modifier.fillMaxSize()) {
         Column(modifier = Modifier.fillMaxSize()) {
-            SecondaryTabRow(selectedTabIndex = selectedTab) {
-                Tab(
-                    selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
-                    text = { Text("本地文件 (Local)") }
-                )
-                Tab(
-                    selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
-                    text = { Text("远端存储 (SMB)") }
-                )
-            }
 
             // 权限请求红框 Banner
             if (!hasStoragePermission) {
@@ -172,13 +193,13 @@ fun FileManagerScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(12.dp),
+                            .padding(8.dp),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
                             "读取存储中的游戏存档需要授予读取权限",
-                            style = MaterialTheme.typography.bodyMedium,
+                            style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )
                         Button(
@@ -199,37 +220,41 @@ fun FileManagerScreen(
                                 }
                             }
                         ) {
-                            Text("去授权")
+                            Text("去授权", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
             }
 
-            // 紧凑导航与路径栏
+            // 28dp 超紧凑单栏合并路径条（跟随当前激活窗口）
             Surface(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(28.dp)
             ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .fillMaxSize()
+                        .padding(horizontal = 6.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (selectedTab == 0) {
+                    if (activePane == 0) {
                         if (currentLocalDir.parentFile != null && currentLocalDir != rootDir) {
                             TextButton(
-                                onClick = { currentLocalDir = currentLocalDir.parentFile ?: rootDir },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                onClick = { onLocalDirChange(currentLocalDir.parentFile ?: rootDir) },
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                modifier = Modifier.height(24.dp)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("返回上一级", style = MaterialTheme.typography.labelMedium)
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("返回", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                         Text(
-                            text = "路径: ${currentLocalDir.absolutePath}",
+                            text = "本地路径: ${currentLocalDir.absolutePath}",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
@@ -239,18 +264,21 @@ fun FileManagerScreen(
                             TextButton(
                                 onClick = {
                                     val lastSlash = currentRemotePath.lastIndexOf('/')
-                                    currentRemotePath = if (lastSlash > 0) currentRemotePath.substring(0, lastSlash) else ""
+                                    val newRemote = if (lastSlash > 0) currentRemotePath.substring(0, lastSlash) else ""
+                                    onRemotePathChange(newRemote)
                                 },
-                                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                                contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp),
+                                modifier = Modifier.height(24.dp)
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("返回上一级", style = MaterialTheme.typography.labelMedium)
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(2.dp))
+                                Text("返回", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                         Text(
                             text = "远端路径: /${currentRemotePath}",
                             style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f)
@@ -259,40 +287,188 @@ fun FileManagerScreen(
                 }
             }
 
-            Box(modifier = Modifier.fillMaxSize()) {
-                if (selectedTab == 0) {
-                    FileListView(
-                        items = localFiles,
-                        emptyText = if (hasStoragePermission) "当前目录为空" else "请先点击上方“去授权”开放文件权限",
-                        activeItemForMenu = itemForMenu,
-                        onItemClick = { item ->
-                            if (item.isDirectory) {
-                                currentLocalDir = File(item.path)
+            //左右 50%/50% 双窗口高密度布局（非激活面板呈现 3dp 无重叠四边内凹阴影）
+            Row(modifier = Modifier.fillMaxSize()) {
+
+                // ==================== 左窗口: 本地文件目录 (50%) ====================
+                val isLeftActive = activePane == 0
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.any { it.pressed }) {
+                                        onActivePaneChange(0) // 手指一接触/滑动/点击，立刻激活！
+                                    }
+                                }
+                            }
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            if (!isLeftActive) {
+                                val s = 3.dp.toPx()
+                                val shadowColor = Color.Black.copy(alpha = 0.15f)
+                                // 1. 顶部阴影
+                                drawRect(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(shadowColor, Color.Transparent),
+                                        startY = 0f,
+                                        endY = s
+                                    ),
+                                    topLeft = Offset.Zero,
+                                    size = Size(size.width, s)
+                                )
+                                // 2. 底部阴影
+                                drawRect(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(Color.Transparent, shadowColor),
+                                        startY = size.height - s,
+                                        endY = size.height
+                                    ),
+                                    topLeft = Offset(0f, size.height - s),
+                                    size = Size(size.width, s)
+                                )
+                                // 3. 左侧阴影
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(shadowColor, Color.Transparent),
+                                        startX = 0f,
+                                        endX = s
+                                    ),
+                                    topLeft = Offset.Zero,
+                                    size = Size(s, size.height)
+                                )
+                                // 4. 右侧阴影
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(Color.Transparent, shadowColor),
+                                        startX = size.width - s,
+                                        endX = size.width
+                                    ),
+                                    topLeft = Offset(size.width - s, 0f),
+                                    size = Size(s, size.height)
+                                )
                             }
                         },
+                    color = if (isLeftActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerLowest
+                ) {
+                    FilePaneListView(
+                        items = localFiles,
+                        emptyText = if (hasStoragePermission) "目录为空" else "请先授权",
+                        isLocalPane = true,
+                        activeItemForMenu = itemForMenu,
+                        onItemClick = { item ->
+                            onActivePaneChange(0)
+                            if (item.isDirectory) onLocalDirChange(File(item.path))
+                        },
                         onItemLongClick = { item ->
-                            itemForMenu = item
+                            onActivePaneChange(0)
+                            itemForMenu = Pair(true, item)
                         },
-                        onDismissMenu = {
+                        onDismissMenu = { itemForMenu = null },
+                        onOpenWithClick = { item ->
                             itemForMenu = null
+                            FileOpener.openFile(context, File(item.path))
                         },
-                        onRenameClick = {
-                            showRenameDialog = true
+                        onCopyClick = { item ->
+                            itemForMenu = null
+                            coroutineScope.launch {
+                                showFastToast("正在复制到远端: ${item.name}...")
+                                val targetRemotePath = if (currentRemotePath.isEmpty()) item.name else "$currentRemotePath/${item.name}"
+                                val file = File(item.path)
+                                if (file.isFile) {
+                                    file.inputStream().use { input ->
+                                        smbClient.uploadFile(server, effectiveShareName, targetRemotePath, input)
+                                    }
+                                }
+                                showFastToast("已成功复制到远端: ${item.name}")
+                                refreshCounter++
+                            }
                         },
-                        onDeleteClick = {
-                            showDeleteDialog = true
-                        }
+                        onRenameClick = { showRenameDialog = true },
+                        onDeleteClick = { showDeleteDialog = true }
                     )
-                } else {
+                }
+
+                VerticalDivider(modifier = Modifier.fillMaxHeight())
+
+                // ==================== 右窗口: 远端 SMB 目录 (50%) ====================
+                val isRightActive = activePane == 1
+                Surface(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .pointerInput(Unit) {
+                            awaitPointerEventScope {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    if (event.changes.any { it.pressed }) {
+                                        onActivePaneChange(1) // 手指一接触/滑动/点击，立刻激活！
+                                    }
+                                }
+                            }
+                        }
+                        .drawWithContent {
+                            drawContent()
+                            if (!isRightActive) {
+                                val s = 3.dp.toPx()
+                                val shadowColor = Color.Black.copy(alpha = 0.15f)
+                                // 1. 顶部阴影
+                                drawRect(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(shadowColor, Color.Transparent),
+                                        startY = 0f,
+                                        endY = s
+                                    ),
+                                    topLeft = Offset.Zero,
+                                    size = Size(size.width, s)
+                                )
+                                // 2. 底部阴影
+                                drawRect(
+                                    brush = Brush.verticalGradient(
+                                        colors = listOf(Color.Transparent, shadowColor),
+                                        startY = size.height - s,
+                                        endY = size.height
+                                    ),
+                                    topLeft = Offset(0f, size.height - s),
+                                    size = Size(size.width, s)
+                                )
+                                // 3. 左侧阴影
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(shadowColor, Color.Transparent),
+                                        startX = 0f,
+                                        endX = s
+                                    ),
+                                    topLeft = Offset.Zero,
+                                    size = Size(s, size.height)
+                                )
+                                // 4. 右侧阴影
+                                drawRect(
+                                    brush = Brush.horizontalGradient(
+                                        colors = listOf(Color.Transparent, shadowColor),
+                                        startX = size.width - s,
+                                        endX = size.width
+                                    ),
+                                    topLeft = Offset(size.width - s, 0f),
+                                    size = Size(s, size.height)
+                                )
+                            }
+                        },
+                    color = if (isRightActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerLowest
+                ) {
                     when {
                         server.baseUrl.isBlank() -> {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Text("请先在【设置】中配置 Windows 电脑的 IP 与共享名称")
+                                Text("未配置 SMB IP", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                         isRemoteLoading -> {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator()
+                                CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                             }
                         }
                         remoteError != null -> {
@@ -300,32 +476,44 @@ fun FileManagerScreen(
                                 Text(
                                     text = remoteError ?: "",
                                     color = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.padding(16.dp)
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(8.dp)
                                 )
                             }
                         }
                         else -> {
-                            FileListView(
+                            FilePaneListView(
                                 items = remoteFiles,
                                 emptyText = "远端目录为空",
+                                isLocalPane = false,
                                 activeItemForMenu = itemForMenu,
                                 onItemClick = { item ->
-                                    if (item.isDirectory) {
-                                        currentRemotePath = item.path
-                                    }
+                                    onActivePaneChange(1)
+                                    if (item.isDirectory) onRemotePathChange(item.path)
                                 },
                                 onItemLongClick = { item ->
-                                    itemForMenu = item
+                                    onActivePaneChange(1)
+                                    itemForMenu = Pair(false, item)
                                 },
-                                onDismissMenu = {
+                                onDismissMenu = { itemForMenu = null },
+                                onOpenWithClick = {
                                     itemForMenu = null
+                                    showFastToast("远端文件需先复制到本地才能打开")
                                 },
-                                onRenameClick = {
-                                    showRenameDialog = true
+                                onCopyClick = { item ->
+                                    itemForMenu = null
+                                    coroutineScope.launch {
+                                        showFastToast("正在复制到本地: ${item.name}...")
+                                        val targetLocalFile = File(currentLocalDir, item.name)
+                                        targetLocalFile.outputStream().use { output ->
+                                            smbClient.downloadFile(server, effectiveShareName, item.path, output)
+                                        }
+                                        showFastToast("已成功复制到本地: ${item.name}")
+                                        refreshCounter++
+                                    }
                                 },
-                                onDeleteClick = {
-                                    showDeleteDialog = true
-                                }
+                                onRenameClick = { showRenameDialog = true },
+                                onDeleteClick = { showDeleteDialog = true }
                             )
                         }
                     }
@@ -347,18 +535,18 @@ fun FileManagerScreen(
     // 新建文件夹弹窗
     if (showNewFolderDialog) {
         NewFolderDialog(
+            activePane = activePane,
             onDismiss = { showNewFolderDialog = false },
             onConfirm = { folderName ->
                 showNewFolderDialog = false
                 coroutineScope.launch {
-                    if (selectedTab == 0) {
+                    if (activePane == 0) {
                         File(currentLocalDir, folderName).mkdirs()
-                        refreshCounter++
                     } else {
                         val remoteFolderPath = if (currentRemotePath.isEmpty()) folderName else "$currentRemotePath/$folderName"
-                        smbClient.createDirectory(server, shareName, remoteFolderPath)
-                        refreshCounter++
+                        smbClient.createDirectory(server, effectiveShareName, remoteFolderPath)
                     }
+                    refreshCounter++
                 }
             }
         )
@@ -379,7 +567,7 @@ fun FileManagerScreen(
 
     // 重命名弹窗
     if (showRenameDialog && itemForMenu != null) {
-        val targetItem = itemForMenu!!
+        val (isLocal, targetItem) = itemForMenu!!
         var newNameInput by remember { mutableStateOf(targetItem.name) }
 
         AlertDialog(
@@ -403,15 +591,14 @@ fun FileManagerScreen(
                         if (newNameInput.isNotBlank() && newNameInput.trim() != targetItem.name) {
                             val newName = newNameInput.trim()
                             coroutineScope.launch {
-                                if (selectedTab == 0) {
+                                if (isLocal) {
                                     val oldFile = File(targetItem.path)
                                     val newFile = File(oldFile.parentFile, newName)
                                     oldFile.renameTo(newFile)
-                                    refreshCounter++
                                 } else {
-                                    smbClient.renameItem(server, shareName, targetItem.path, newName, targetItem.isDirectory)
-                                    refreshCounter++
+                                    smbClient.renameItem(server, effectiveShareName, targetItem.path, newName, targetItem.isDirectory)
                                 }
+                                refreshCounter++
                                 showRenameDialog = false
                                 itemForMenu = null
                             }
@@ -434,7 +621,7 @@ fun FileManagerScreen(
 
     // 删除确认弹窗
     if (showDeleteDialog && itemForMenu != null) {
-        val targetItem = itemForMenu!!
+        val (isLocal, targetItem) = itemForMenu!!
         AlertDialog(
             onDismissRequest = {
                 showDeleteDialog = false
@@ -449,13 +636,12 @@ fun FileManagerScreen(
                         val deletingItem = targetItem
                         itemForMenu = null
                         coroutineScope.launch {
-                            if (selectedTab == 0) {
+                            if (isLocal) {
                                 File(deletingItem.path).deleteRecursively()
-                                refreshCounter++
                             } else {
-                                smbClient.deleteItem(server, shareName, deletingItem.path, deletingItem.isDirectory)
-                                refreshCounter++
+                                smbClient.deleteItem(server, effectiveShareName, deletingItem.path, deletingItem.isDirectory)
                             }
+                            refreshCounter++
                         }
                     }
                 ) {
@@ -483,54 +669,100 @@ private fun isHiddenFile(name: String): Boolean {
             upper == "THUMBS.DB"
 }
 
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val exp = (Math.log(bytes.toDouble()) / Math.log(1024.0)).toInt().coerceAtMost(3)
+    val pre = "KMGT"[exp - 1]
+    val value = bytes / Math.pow(1024.0, exp.toDouble())
+    return String.format(Locale.US, "%.1f %cB", value, pre)
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FileListView(
+private fun FilePaneListView(
     items: List<RemoteFileItem>,
     emptyText: String,
-    activeItemForMenu: RemoteFileItem?,
+    isLocalPane: Boolean,
+    activeItemForMenu: Pair<Boolean, RemoteFileItem>?,
     onItemClick: (RemoteFileItem) -> Unit,
     onItemLongClick: (RemoteFileItem) -> Unit,
     onDismissMenu: () -> Unit,
+    onOpenWithClick: (RemoteFileItem) -> Unit,
+    onCopyClick: (RemoteFileItem) -> Unit,
     onRenameClick: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
     if (items.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(emptyText, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(16.dp))
+            Text(emptyText, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(4.dp))
         }
     } else {
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(vertical = 2.dp)
+        ) {
             items(items) { item ->
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    ListItem(
-                        headlineContent = { Text(item.name) },
-                        supportingContent = {
-                            Text(if (item.isDirectory) "文件夹" else "大小: ${item.size} bytes")
-                        },
-                        leadingContent = {
-                            Icon(
-                                imageVector = if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
-                                contentDescription = null,
-                                tint = if (item.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                            )
-                        },
-                        modifier = Modifier.combinedClickable(
-                            onClick = { onItemClick(item) },
-                            onLongClick = { onItemLongClick(item) }
-                        )
-                    )
+                val isSelectedForMenu = activeItemForMenu?.first == isLocalPane && activeItemForMenu.second.path == item.path
 
-                    // 靠右弹出且距离屏幕右边缘保持 16.dp 边距的长按浮动卡片 (图 2 样式)
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    // MT管理器风格高密度行 (~38dp 高度)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 38.dp)
+                            .combinedClickable(
+                                onClick = { onItemClick(item) },
+                                onLongClick = { onItemLongClick(item) }
+                            )
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = if (item.isDirectory) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (!item.isDirectory) {
+                                Text(
+                                    text = formatFileSize(item.size),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+
+                    // 靠右紧贴 16.dp 的浮动小卡片菜单
                     Box(
                         modifier = Modifier
                             .align(Alignment.CenterEnd)
                             .padding(end = 16.dp)
                     ) {
                         DropdownMenu(
-                            expanded = (activeItemForMenu?.path == item.path),
+                            expanded = isSelectedForMenu,
                             onDismissRequest = onDismissMenu
                         ) {
+                            if (!item.isDirectory && isLocalPane) {
+                                DropdownMenuItem(
+                                    text = { Text("打开方式") },
+                                    leadingIcon = { Icon(Icons.AutoMirrored.Filled.OpenInNew, contentDescription = null) },
+                                    onClick = { onOpenWithClick(item) }
+                                )
+                            }
+                            DropdownMenuItem(
+                                text = { Text(if (isLocalPane) "复制 >" else "< 复制") },
+                                leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                                onClick = { onCopyClick(item) }
+                            )
                             DropdownMenuItem(
                                 text = { Text("重命名") },
                                 leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
@@ -544,7 +776,7 @@ private fun FileListView(
                         }
                     }
                 }
-                HorizontalDivider()
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
             }
         }
     }
@@ -552,14 +784,15 @@ private fun FileListView(
 
 @Composable
 private fun NewFolderDialog(
+    activePane: Int,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
     var folderName by remember { mutableStateOf("") }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("新建文件夹") },
+        onDismissRequest = { onDismiss() },
+        title = { Text(if (activePane == 0) "新建本地文件夹" else "新建远端文件夹") },
         text = {
             OutlinedTextField(
                 value = folderName,
@@ -581,7 +814,7 @@ private fun NewFolderDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = { onDismiss() }) {
                 Text("取消")
             }
         }
@@ -596,14 +829,20 @@ private fun CreateTaskDialog(
     onDismiss: () -> Unit,
     onConfirm: (SyncTask) -> Unit
 ) {
-    val suggestedTaskId = remember(currentLocalPath) {
-        currentLocalPath.substringAfterLast('/').ifBlank { "GameSave" }
+    // 默认 Task ID: 优先使用远端存储目录名称
+    val suggestedTaskId = remember(currentRemotePath, currentLocalPath) {
+        val remoteName = currentRemotePath.substringAfterLast('/').ifBlank { "" }
+        if (remoteName.isNotBlank() && remoteName != "GameSS") {
+            remoteName
+        } else {
+            currentLocalPath.substringAfterLast('/').ifBlank { "GameSave" }
+        }
     }
 
     var taskId by remember { mutableStateOf(suggestedTaskId) }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { onDismiss() },
         title = { Text("创建 Task ID 映射规则") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -653,7 +892,7 @@ private fun CreateTaskDialog(
             }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
+            TextButton(onClick = { onDismiss() }) {
                 Text("取消")
             }
         }

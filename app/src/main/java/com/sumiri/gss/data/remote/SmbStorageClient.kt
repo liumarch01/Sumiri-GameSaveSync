@@ -247,7 +247,7 @@ class SmbStorageClient(private val gson: Gson = Gson()) {
                 "访问被拒绝！请在 Windows 共享属性里确认是否开启了“读取/写入”权限。"
 
             msg.contains("ConnectException") || msg.contains("Timeout") || msg.contains("HostUnreachable") ->
-                "网络连接超时/失败，请检查手机与电脑是否在同一个 Wi-Fi，以及 IP 地址是否正确。"
+                "网络连接超时/失败，请检查手机与电脑是否在同一个网络，以及 IP 地址是否正确。"
 
             else -> "SMB 连接异常: $msg"
         }

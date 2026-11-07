@@ -51,7 +51,7 @@ class SyncController(
         // 2. 生成本地 Manifest
         val localManifest = LocalFileEngine.generateManifest(task.id, localDir)
 
-        emit(SyncProgress(statusText = "正在读取远端清单..."))
+        emit(SyncProgress(statusText = "正在读取远端清单喵..."))
         // 3. 获取远端 Manifest
         val remoteManifest = smbClient.readManifest(server, shareName, task.remotePath).getOrNull()
 
@@ -117,7 +117,7 @@ class SyncController(
 
         if (writeResult.isSuccess) {
             saveBaseManifest(context, task.id, updatedLocalManifest)
-            emit(SyncProgress(statusText = "推送成功！共处理 $total 项变更。", isCompleted = true))
+            emit(SyncProgress(statusText = "推送成功！共处理 $total 项变更喵~", isCompleted = true))
         } else {
             emit(SyncProgress(error = "远端清单更新失败: ${writeResult.exceptionOrNull()?.message}"))
         }

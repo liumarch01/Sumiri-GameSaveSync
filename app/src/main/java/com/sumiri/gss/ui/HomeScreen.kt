@@ -50,7 +50,7 @@ fun HomeScreen(
     val scrollState = rememberScrollState()
 
     var isOperating by remember { mutableStateOf(false) }
-    var logText by remember { mutableStateOf("准备就绪。可在【文件管理&映射】中添加更多游戏存档映射。") }
+    var logText by remember { mutableStateOf("准备就绪！可在【文件管理&映射】中添加更多游戏存档映射喵~") }
     var showTaskManageDialog by remember { mutableStateOf(false) }
 
     // 长按绑定的 Task 菜单项目
@@ -106,11 +106,13 @@ fun HomeScreen(
             val remoteManifest = smbClient.readManifest(server, shareName, currentTask.remotePath).getOrNull()
             val diff3Way = DiffEngine.compare3Way(null, localManifest, remoteManifest)
 
+            val hasRemoteChanges = diff3Way.pullDownload.isNotEmpty() || diff3Way.pullDeleteLocal.isNotEmpty()
+            val hasLocalChanges = diff3Way.pushUpload.isNotEmpty() || diff3Way.pushDeleteRemote.isNotEmpty()
+
             autoCheckTip = when {
-                diff3Way.pullDownload.isNotEmpty() || diff3Way.pullDeleteLocal.isNotEmpty() ->
-                    "检测到远端有更新的存档变更 (${diff3Way.pullDownload.size + diff3Way.pullDeleteLocal.size} 项)，建议执行同步"
-                diff3Way.pushUpload.isNotEmpty() || diff3Way.pushDeleteRemote.isNotEmpty() ->
-                    "检测到本地有未推送的最新存档 (${diff3Way.pushUpload.size + diff3Way.pushDeleteRemote.size} 项)，建议执行推送"
+                hasRemoteChanges && hasLocalChanges -> "检测到本地与远端均有变动，请按需选择【推送】或【同步】"
+                hasRemoteChanges -> "检测到远端有更新的存档变更 (${diff3Way.pullDownload.size + diff3Way.pullDeleteLocal.size} 项)，建议执行【同步】"
+                hasLocalChanges -> "检测到本地有未推送的最新存档 (${diff3Way.pushUpload.size + diff3Way.pushDeleteRemote.size} 项)，建议执行【推送】"
                 else -> "本地与远端存档完全同步，已是最新版本"
             }
         } else {
@@ -182,7 +184,7 @@ fun HomeScreen(
                         Icon(
                             imageVector = when {
                                 isError -> Icons.Default.ErrorOutline
-                                tipText.contains("同步") -> Icons.Default.CheckCircle
+                                tipText.contains("同步") || tipText.contains("完全同步") -> Icons.Default.CheckCircle
                                 else -> Icons.Default.Info
                             },
                             contentDescription = null,

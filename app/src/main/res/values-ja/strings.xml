@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">GameSS</string>
+    <string name="app_full_name">GameSaveSync (GameSS)</string>
+    <string name="tab_home">ホーム</string>
+    <string name="tab_file_manager">ファイル管理&amp;マッピング</string>
+    <string name="tab_settings">設定</string>
+    <string name="btn_push">プッシュ</string>
+    <string name="btn_sync">同期</string>
+    <string name="lang_chinese">中国語 (簡体字)</string>
+    <string name="lang_english">英語</string>
+    <string name="lang_japanese">日本語</string>
+</resources>

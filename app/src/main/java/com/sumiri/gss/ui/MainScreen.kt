@@ -62,6 +62,10 @@ fun MainScreen(
 
     var showResetDialog by remember { mutableStateOf(false) }
     var showCreateTaskDialogInTab1 by remember { mutableStateOf(false) }
+    // 文件管理页的状态提升（保证切换到其他 Tab 再回来时，路径不丢失）-Deepseek
+    var fmActivePane by remember { mutableIntStateOf(0) }
+    var fmCurrentLocalDir by remember { mutableStateOf(Environment.getExternalStorageDirectory()) }
+    var fmCurrentRemotePath by remember { mutableStateOf("") }
 
     GameSSTheme(darkTheme = isDarkTheme) {
         Scaffold(
@@ -169,6 +173,16 @@ fun MainScreen(
                         currentTask = activeTask,
                         showHiddenFiles = showHiddenFiles,
                         showCreateTaskDialog = showCreateTaskDialogInTab1,
+
+                        // === 补充缺失的状态传入与更新回调 ===
+                        activePane = fmActivePane,
+                        onActivePaneChange = { fmActivePane = it },
+                        currentLocalDir = fmCurrentLocalDir,
+                        onLocalDirChange = { fmCurrentLocalDir = it },
+                        currentRemotePath = fmCurrentRemotePath,
+                        onRemotePathChange = { fmCurrentRemotePath = it },
+                        // ======================================
+
                         onTaskCreated = { newTask ->
                             val updated = taskList.filter { it.id != newTask.id } + newTask
                             taskList = updated
@@ -216,7 +230,7 @@ fun MainScreen(
         AlertDialog(
             onDismissRequest = { showResetDialog = false },
             title = { Text("重置配置") },
-            text = { Text("确定要清除保存的所有服务器与 Task ID 映射配置吗？此操作无法撤销。") },
+            text = { Text("确定要清除保存的所有服务器与 Task ID 映射配置吗？此操作无法撤销！") },
             confirmButton = {
                 TextButton(
                     onClick = {
